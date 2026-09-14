@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {"type": "command", "matcher": "bash|edit", "bash": "./scripts/guard.sh", "timeoutSec": 15, "cwd": "scripts", "env": {"LEVEL": "strict"}}
+    ],
+    "userPromptSubmitted": [
+      {"type": "command", "exec": "python3", "args": ["scripts/log.py", "--tag", "a b"]}
+    ],
+    "agentStop": [{"type": "command", "bash": "echo stop"}],
+    "errorOccurred": [{"type": "command", "bash": "echo err"}],
+    "sessionStart": [{"type": "prompt", "prompt": "hello"}, {"type": "command", "powershell": "Write-Host hi"}]
+  }
+}

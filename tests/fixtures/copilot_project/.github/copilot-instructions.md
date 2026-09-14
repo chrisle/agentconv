@@ -1,0 +1,1 @@
+Prefer TypeScript strict mode.

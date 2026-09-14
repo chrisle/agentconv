@@ -1,0 +1,1 @@
+{"playwright": {"type": "local", "command": "npx", "args": ["@playwright/mcp@latest"], "tools": ["*"]}, "ctx": {"url": "https://mcp.context7.com/mcp"}}

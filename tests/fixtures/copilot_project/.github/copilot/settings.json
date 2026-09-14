@@ -1,0 +1,1 @@
+{"model": "claude-sonnet-4.5", "includeCoAuthoredBy": true, "deniedUrls": ["evil.example"], "hooks": {"sessionEnd": [{"type": "command", "bash": "echo bye"}]}}
