@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"io"
 	"os"
 	"path/filepath"
@@ -85,6 +86,37 @@ func TestUpdateURLAndConfirmation(t *testing.T) {
 	}
 	if confirmUpdate(strings.NewReader("\n"), io.Discard, "/tmp/agentconv", url) {
 		t.Fatal("empty response must cancel update")
+	}
+}
+
+func TestExtractMacOSUpdate(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "agentconv.zip")
+	file, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	entry, err := writer.Create("agentconv-darwin-arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte("binary")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	binary, err := extractMacOSUpdate(archivePath, filepath.Dir(archivePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(binary)
+	if got := mustRead(t, binary); got != "binary" {
+		t.Fatalf("extracted data = %q", got)
 	}
 }
 

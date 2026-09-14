@@ -127,6 +127,12 @@ The publish job attaches all artifacts to the matching GitHub Release. A workflo
 
 Release artifacts embed the tag version (without the leading `v`) through Go linker flags. For a local versioned build, use `make build VERSION=0.4.0`.
 
+### Release signing setup
+
+The release workflow is intentionally fail-closed: it will not publish unsigned macOS or Windows binaries. Configure the repository secret `OP_SERVICE_ACCOUNT_TOKEN` with a read-only 1Password service-account token for the `CodeSigning` vault.
+
+It reads the shared `CodeSigning/code-signing` item at build time. macOS assets are Developer ID-signed and notarized ZIPs; Windows assets are signed through Azure Artifact Signing and verified with `Get-AuthenticodeSignature`. The workflow never stores certificates or Azure credentials in the repository.
+
 The macOS/Linux and PowerShell installers live in [scripts](scripts/) and download release assets from `chrisle/agentconv`.
 
 ### Layout

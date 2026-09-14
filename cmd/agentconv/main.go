@@ -3,6 +3,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
@@ -751,10 +752,50 @@ func updateAsset() (string, error) {
 		return "", fmt.Errorf("Windows arm64 releases are not available")
 	}
 	asset := fmt.Sprintf("agentconv-%s-%s", osName, arch)
-	if osName == "windows" {
+	if osName == "darwin" {
+		asset += ".zip"
+	} else if osName == "windows" {
 		asset += ".exe"
 	}
 	return asset, nil
+}
+
+func extractMacOSUpdate(archivePath, directory string) (string, error) {
+	archive, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return "", fmt.Errorf("open macOS update archive: %w", err)
+	}
+	defer archive.Close()
+	for _, entry := range archive.File {
+		if entry.FileInfo().IsDir() {
+			continue
+		}
+		input, err := entry.Open()
+		if err != nil {
+			return "", err
+		}
+		output, err := os.CreateTemp(directory, ".agentconv-update-binary-*")
+		if err != nil {
+			input.Close()
+			return "", err
+		}
+		_, copyErr := io.Copy(output, input)
+		closeErr := output.Close()
+		input.Close()
+		if copyErr != nil || closeErr != nil {
+			_ = os.Remove(output.Name())
+			if copyErr != nil {
+				return "", copyErr
+			}
+			return "", closeErr
+		}
+		if err := os.Chmod(output.Name(), 0755); err != nil {
+			_ = os.Remove(output.Name())
+			return "", err
+		}
+		return output.Name(), nil
+	}
+	return "", fmt.Errorf("macOS update archive has no executable")
 }
 
 func updateURL() (string, error) {
@@ -816,6 +857,14 @@ func update(dry bool) error {
 	}
 	if err != nil {
 		return fmt.Errorf("finalize update: %w", err)
+	}
+	if runtime.GOOS == "darwin" {
+		binary, err := extractMacOSUpdate(temporaryName, filepath.Dir(executable))
+		if err != nil {
+			return err
+		}
+		_ = os.Remove(temporaryName)
+		temporaryName = binary
 	}
 
 	if runtime.GOOS == "windows" {

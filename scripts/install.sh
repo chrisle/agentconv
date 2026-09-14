@@ -16,11 +16,21 @@ case "$(uname -m)" in
 esac
 
 asset="agentconv-${os}-${arch}"
+if [ "$os" = "darwin" ]; then
+  asset="${asset}.zip"
+fi
 url="https://github.com/${repo}/releases/latest/download/${asset}"
 destination="${HOME}/.local/bin"
 
 mkdir -p "$destination"
-curl -fsSL "$url" -o "$destination/agentconv"
+if [ "$os" = "darwin" ]; then
+  archive=$(mktemp)
+  trap 'rm -f "$archive"' EXIT
+  curl -fsSL "$url" -o "$archive"
+  unzip -p "$archive" > "$destination/agentconv"
+else
+  curl -fsSL "$url" -o "$destination/agentconv"
+fi
 chmod 755 "$destination/agentconv"
 echo "Installed agentconv to $destination/agentconv"
 echo "Ensure $destination is on your PATH."

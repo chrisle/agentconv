@@ -13,6 +13,9 @@ on:
 permissions:
   contents: write
 
+env:
+  OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
 jobs:
   build-macos:
     name: Build macOS arm64
@@ -28,22 +31,69 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Ensure signing tools
+        run: |
+          command -v op >/dev/null 2>&1 || brew install --cask 1password-cli
+          command -v jq >/dev/null 2>&1 || brew install jq
+      - name: Load macOS signing secrets from 1Password
+        run: |
+          test -n "$OP_SERVICE_ACCOUNT_TOKEN" || { echo "OP_SERVICE_ACCOUNT_TOKEN repository secret is required" >&2; exit 1; }
+          secrets=$(op item get code-signing --vault CodeSigning --format json)
+          field() { echo "$secrets" | jq -r ".fields[] | select(.label==\"$1\") | .value // empty"; }
+          for name in APPLE_ID APPLE_TEAM_ID APPLE_CERTIFICATE_P12 APPLE_CERTIFICATE_PASSWORD APPLE_APP_SPECIFIC_PASSWORD APPLE_SIGNING_IDENTITY; do
+            value=$(field "$name")
+            test -n "$value" || { echo "$name missing from CodeSigning/code-signing" >&2; exit 1; }
+            echo "::add-mask::$value"
+            echo "$name=$value" >> "$GITHUB_ENV"
+          done
+      - name: Set up temporary signing keychain
+        run: |
+          keychain="$RUNNER_TEMP/agentconv-signing.keychain-db"
+          password=$(uuidgen)
+          echo "::add-mask::$password"
+          security list-keychains -d user | sed 's/^ *"//;s/"$//' > "$RUNNER_TEMP/keychains.before"
+          security delete-keychain "$keychain" 2>/dev/null || true
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 -D > "$RUNNER_TEMP/cert.p12"
+          chmod 600 "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(cat "$RUNNER_TEMP/keychains.before")
+          security find-identity -v -p codesigning "$keychain"
       - name: Test
         run: go test ./...
       - name: Build
         run: |
           go build -trimpath -ldflags="-s -w -X main.version=${VERSION#v}" -o dist/agentconv-darwin-arm64 ./cmd/agentconv
           GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.version=${VERSION#v}" -o dist/agentconv-darwin-amd64 ./cmd/agentconv
+      - name: Sign and notarize macOS binaries
+        run: |
+          for binary in dist/agentconv-darwin-arm64 dist/agentconv-darwin-amd64; do
+            codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$binary"
+            codesign --verify --strict --verbose=2 "$binary"
+            archive="${binary}.zip"
+            ditto -c -k --keepParent "$binary" "$archive"
+            xcrun notarytool submit "$archive" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait
+            spctl -a -vvv -t exec "$binary"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: agentconv-darwin-arm64
-          path: dist/agentconv-darwin-arm64
+          path: dist/agentconv-darwin-arm64.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: agentconv-darwin-amd64
-          path: dist/agentconv-darwin-amd64
+          path: dist/agentconv-darwin-amd64.zip
           if-no-files-found: error
+      - name: Tear down temporary signing keychain
+        if: always()
+        run: |
+          security list-keychains -d user -s $(cat "$RUNNER_TEMP/keychains.before") 2>/dev/null || true
+          security delete-keychain "$RUNNER_TEMP/agentconv-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12"
 
   build-windows:
     name: Build Windows x64
@@ -59,6 +109,48 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Ensure PowerShell 7 and 1Password CLI
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command pwsh.exe -ErrorAction SilentlyContinue)) {
+            winget install --id Microsoft.PowerShell -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+          }
+          $pwsh = Get-Command pwsh.exe -ErrorAction Stop
+          Split-Path $pwsh.Source | Add-Content $env:GITHUB_PATH
+          if (-not (Get-Command op.exe -ErrorAction SilentlyContinue)) {
+            winget install --id AgileBits.1Password.CLI -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+            $op = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Filter op.exe -Recurse | Select-Object -First 1
+            if (-not $op) { throw '1Password CLI installation did not provide op.exe' }
+            $op.DirectoryName | Add-Content $env:GITHUB_PATH
+          }
+      - name: Ensure Azure Artifact Signing prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable -Name TrustedSigning)) {
+            Install-Module -Name TrustedSigning -MinimumVersion 0.5.0 -Force -Repository PSGallery -Scope CurrentUser
+          }
+          if (-not ((dotnet --list-runtimes) -match 'Microsoft.NETCore.App 8\.')) {
+            winget install --id Microsoft.DotNet.Runtime.8 -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+          }
+      - name: Load Windows signing secrets from 1Password
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:OP_SERVICE_ACCOUNT_TOKEN) { throw 'OP_SERVICE_ACCOUNT_TOKEN repository secret is required' }
+          $fields = (op item get code-signing --vault CodeSigning --format json | ConvertFrom-Json).fields
+          function Get-Field($name) { ($fields | Where-Object { $_.label -eq $name }).value }
+          $mapping = @{
+            AZURE_TENANT_ID = 'AZURE_SIGNING_TENANT_ID'; AZURE_CLIENT_ID = 'AZURE_SIGNING_CLIENT_ID'; AZURE_CLIENT_SECRET = 'AZURE_SIGNING_CLIENT_SECRET'
+            AZURE_SIGNING_ENDPOINT = 'AZURE_SIGNING_ENDPOINT'; AZURE_SIGNING_ACCOUNT_NAME = 'AZURE_SIGNING_ACCOUNT_NAME'; AZURE_SIGNING_CERT_PROFILE = 'AZURE_SIGNING_CERT_PROFILE'
+          }
+          foreach ($target in $mapping.Keys) {
+            $value = Get-Field $mapping[$target]
+            if (-not $value) { throw "$($mapping[$target]) missing from CodeSigning/code-signing" }
+            Write-Output "::add-mask::$value"
+            "$target=$value" | Add-Content $env:GITHUB_ENV
+          }
       - name: Test
         shell: pwsh
         run: go test ./...
@@ -67,6 +159,17 @@ jobs:
         run: |
           $version = $env:VERSION.TrimStart('v')
           go build -trimpath "-ldflags=-s -w -X main.version=$version" -o dist/agentconv-windows-amd64.exe ./cmd/agentconv
+      - name: Sign Windows binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-TrustedSigning -Endpoint $env:AZURE_SIGNING_ENDPOINT -CodeSigningAccountName $env:AZURE_SIGNING_ACCOUNT_NAME -CertificateProfileName $env:AZURE_SIGNING_CERT_PROFILE -FilesFolder dist -FilesFolderFilter exe -FileDigest SHA256 -TimestampRfc3161 'http://timestamp.acs.microsoft.com' -TimestampDigest SHA256
+      - name: Verify Windows code signature
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signature = Get-AuthenticodeSignature dist/agentconv-windows-amd64.exe
+          if ($signature.Status -ne 'Valid') { throw "signature is $($signature.Status): $($signature.StatusMessage)" }
       - uses: actions/upload-artifact@v4
         with:
           name: agentconv-windows-amd64
