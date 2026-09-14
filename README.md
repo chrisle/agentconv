@@ -69,6 +69,22 @@ Agentconv records generated files in `.agentconv.json`. It refreshes only its ow
 agentconv clean
 ```
 
+## Version and updates
+
+Check the installed version:
+
+```sh
+agentconv --version
+```
+
+Update to the matching latest GitHub Release binary:
+
+```sh
+agentconv update
+```
+
+The command shows the executable it will replace and asks for confirmation. Use `agentconv update --dry-run` to inspect the download, or `agentconv update --force` to update without the prompt.
+
 ## What gets converted
 
 | Source | Target | Result |
@@ -108,6 +124,8 @@ Pushing a `v*` tag runs [.github/workflows/release.yml](.github/workflows/releas
 - Windows x86_64
 
 The publish job attaches all artifacts to the matching GitHub Release. A workflow dispatch can publish a specified tag as well.
+
+Release artifacts embed the tag version (without the leading `v`) through Go linker flags. For a local versioned build, use `make build VERSION=0.4.0`.
 
 The macOS/Linux and PowerShell installers live in [scripts](scripts/) and download release assets from `chrisle/agentconv`.
 

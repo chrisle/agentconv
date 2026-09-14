@@ -17,6 +17,8 @@ jobs:
   build-macos:
     name: Build macOS arm64
     runs-on: [self-hosted, macos, arm64]
+    env:
+      VERSION: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,8 +32,8 @@ jobs:
         run: go test ./...
       - name: Build
         run: |
-          go build -trimpath -ldflags="-s -w" -o dist/agentconv-darwin-arm64 ./cmd/agentconv
-          GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/agentconv-darwin-amd64 ./cmd/agentconv
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION#v}" -o dist/agentconv-darwin-arm64 ./cmd/agentconv
+          GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.version=${VERSION#v}" -o dist/agentconv-darwin-amd64 ./cmd/agentconv
       - uses: actions/upload-artifact@v4
         with:
           name: agentconv-darwin-arm64
@@ -46,6 +48,8 @@ jobs:
   build-windows:
     name: Build Windows x64
     runs-on: [self-hosted, windows, x64]
+    env:
+      VERSION: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -60,7 +64,9 @@ jobs:
         run: go test ./...
       - name: Build
         shell: pwsh
-        run: go build -trimpath -ldflags="-s -w" -o dist/agentconv-windows-amd64.exe ./cmd/agentconv
+        run: |
+          $version = $env:VERSION.TrimStart('v')
+          go build -trimpath "-ldflags=-s -w -X main.version=$version" -o dist/agentconv-windows-amd64.exe ./cmd/agentconv
       - uses: actions/upload-artifact@v4
         with:
           name: agentconv-windows-amd64
@@ -70,6 +76,8 @@ jobs:
   build-linux:
     name: Build Linux x64
     runs-on: [self-hosted, linux, x64]
+    env:
+      VERSION: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -83,8 +91,8 @@ jobs:
         run: go test ./...
       - name: Build
         run: |
-          go build -trimpath -ldflags="-s -w" -o dist/agentconv-linux-amd64 ./cmd/agentconv
-          GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/agentconv-linux-arm64 ./cmd/agentconv
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION#v}" -o dist/agentconv-linux-amd64 ./cmd/agentconv
+          GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.version=${VERSION#v}" -o dist/agentconv-linux-arm64 ./cmd/agentconv
       - uses: actions/upload-artifact@v4
         with:
           name: agentconv-linux-amd64

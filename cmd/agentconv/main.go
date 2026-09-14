@@ -11,16 +11,23 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.3.0"
+const releaseRepository = "chrisle/agentconv"
+
+// version is set for release builds with -ldflags "-X main.version=<version>".
+var version = "dev"
+
 const manifestName = ".agentconv.json"
 
 type fileOp struct {
@@ -725,8 +732,109 @@ func explicitSync(root, from, to string) *plan {
 	return nil
 }
 
+func updateAsset() (string, error) {
+	var osName string
+	switch runtime.GOOS {
+	case "darwin", "linux", "windows":
+		osName = runtime.GOOS
+	default:
+		return "", fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
+	}
+	arch := runtime.GOARCH
+	if arch == "x86_64" {
+		arch = "amd64"
+	}
+	if arch != "amd64" && arch != "arm64" {
+		return "", fmt.Errorf("unsupported architecture: %s", runtime.GOARCH)
+	}
+	if osName == "windows" && arch != "amd64" {
+		return "", fmt.Errorf("Windows arm64 releases are not available")
+	}
+	asset := fmt.Sprintf("agentconv-%s-%s", osName, arch)
+	if osName == "windows" {
+		asset += ".exe"
+	}
+	return asset, nil
+}
+
+func updateURL() (string, error) {
+	asset, err := updateAsset()
+	if err != nil {
+		return "", err
+	}
+	return "https://github.com/" + releaseRepository + "/releases/latest/download/" + asset, nil
+}
+
+func confirmUpdate(in io.Reader, out io.Writer, executable, url string) bool {
+	fmt.Fprintln(out, "This downloads the latest public agentconv release and replaces the current executable.")
+	fmt.Fprintln(out, "Current executable:", executable)
+	fmt.Fprintln(out, "Download:", url)
+	fmt.Fprint(out, "Proceed? [y/N] ")
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && len(line) == 0 {
+		return false
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes"
+}
+
+func update(dry bool) error {
+	url, err := updateURL()
+	if err != nil {
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("find current executable: %w", err)
+	}
+	if dry {
+		fmt.Println("Would download", url)
+		fmt.Println("Would replace", executable)
+		return nil
+	}
+
+	response, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("download latest release: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("download latest release: %s", response.Status)
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(executable), ".agentconv-update-*")
+	if err != nil {
+		return fmt.Errorf("create update file: %w", err)
+	}
+	temporaryName := temporary.Name()
+	defer func() { _ = os.Remove(temporaryName) }()
+	if _, err = io.Copy(temporary, io.LimitReader(response.Body, 100<<20)); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write update: %w", err)
+	}
+	if err = temporary.Chmod(0755); err == nil {
+		err = temporary.Close()
+	}
+	if err != nil {
+		return fmt.Errorf("finalize update: %w", err)
+	}
+
+	if runtime.GOOS == "windows" {
+		command := fmt.Sprintf(`ping 127.0.0.1 -n 2 >nul & move /Y "%s" "%s" >nul`, temporaryName, executable)
+		if err := exec.Command("cmd.exe", "/C", command).Start(); err != nil {
+			return fmt.Errorf("schedule Windows update: %w", err)
+		}
+		fmt.Println("Update downloaded. agentconv will be replaced after this command exits.")
+		return nil
+	}
+	if err := os.Rename(temporaryName, executable); err != nil {
+		return fmt.Errorf("replace executable: %w", err)
+	}
+	fmt.Printf("Updated agentconv to the latest release. Run `agentconv --version` to verify.\n")
+	return nil
+}
+
 func usage() {
-	fmt.Fprintf(os.Stderr, "agentconv %s\n\nUsage:\n  agentconv convert --from <claude|copilot> --to <codex|copilot|claude> [PATH]\n  agentconv sync [--from <claude|copilot>] --to <codex|copilot|claude> [PATH]\n\nCompatibility commands: detect, to-copilot, to-codex, to-claude, universal, clean\n", version)
+	fmt.Fprintf(os.Stderr, "agentconv %s\n\nUsage:\n  agentconv convert --from <claude|copilot> --to <codex|copilot|claude> [PATH]\n  agentconv sync [--from <claude|copilot>] --to <codex|copilot|claude> [PATH]\n  agentconv update [--dry-run] [--force]\n\nCompatibility commands: detect, to-copilot, to-codex, to-claude, universal, clean\n", version)
 }
 func main() {
 	if len(os.Args) < 2 {
@@ -798,6 +906,24 @@ func main() {
 			return
 		}
 		clean(root, *dry)
+		return
+	}
+	if cmd == "update" {
+		url, updateErr := updateURL()
+		if updateErr != nil {
+			die(updateErr.Error())
+		}
+		executable, updateErr := os.Executable()
+		if updateErr != nil {
+			die(updateErr.Error())
+		}
+		if !*dry && !*force && !confirmUpdate(os.Stdin, os.Stdout, executable, url) {
+			fmt.Fprintln(os.Stderr, "cancelled")
+			return
+		}
+		if updateErr := update(*dry); updateErr != nil {
+			die(updateErr.Error())
+		}
 		return
 	}
 	var p *plan

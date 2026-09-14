@@ -72,6 +72,22 @@ func TestConfirmationRequiresAnAffirmativeAnswer(t *testing.T) {
 	}
 }
 
+func TestUpdateURLAndConfirmation(t *testing.T) {
+	url, err := updateURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(url, "https://github.com/chrisle/agentconv/releases/latest/download/agentconv-") {
+		t.Fatalf("unexpected update URL: %s", url)
+	}
+	if !confirmUpdate(strings.NewReader("y\n"), io.Discard, "/tmp/agentconv", url) {
+		t.Fatal("y should confirm update")
+	}
+	if confirmUpdate(strings.NewReader("\n"), io.Discard, "/tmp/agentconv", url) {
+		t.Fatal("empty response must cancel update")
+	}
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
